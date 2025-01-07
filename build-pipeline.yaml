@@ -1,0 +1,99 @@
+# Starter pipeline
+# Start with a minimal pipeline that you can customize to build and deploy your code.
+# Add steps that build, run tests, deploy, and more:
+# https://aka.ms/yaml
+
+trigger:
+ branches:
+   include:
+     - main
+
+stages:
+# Build Stage
+- stage: Build
+  displayName: 'Build Stage'
+  jobs:
+  - job: Build
+    displayName: 'Build Job'
+    pool:
+      vmImage: 'windows-latest'
+    variables:
+      - group: Bastion-Dev-Config
+      - name: buildPlatform
+        value: 'Any CPU'
+      - name: buildConfiguration
+        value: 'Release'
+      - name: solution
+        value: '**/SolutionName.sln'
+      - name: project
+        value: '**/ProjectName.csproj'
+      - name: outputDir
+        value: '$(Build.ArtifactStagingDirectory)'
+      
+    steps:
+    # 1. Install NuGet tool
+    - task: NuGetToolInstaller@1
+      name: 'InstallNuGet'
+      displayName: 'Install NuGet'
+
+    # 2. Restore NuGet packages
+    - task: NuGetCommand@2
+      name: 'NuGetRestore'
+      displayName: 'Restore NuGet packages'
+      inputs:
+        command: 'restore'
+        restoreSolution: '$(solution)'
+        feedsToUse: 'select'
+        
+    # 3. Update appsettings.json with Variable Group values
+    - task: PowerShell@2
+      displayName: 'Update appsettings.json'
+      inputs:
+        targetType: 'inline'
+        script: |
+          # Define appsettings.json path
+          $appSettingsPath = "$(System.DefaultWorkingDirectory)/ProjectPath/appsettings.json"
+          
+          # Read and update appsettings.json
+          $json = Get-Content $appSettingsPath | ConvertFrom-Json
+          $json.ConnectionStrings.DatabaseConnection = "$(ConnectionStrings__DatabaseConnection)"
+          $json.AwsConnectionStrings.AwsId = "$(AwsConnectionStrings__AwsId)"
+          $json.AwsConnectionStrings.AwsSecretKey = "$(AwsConnectionStrings__AwsSecretKey)"
+          $json.AwsConnectionStrings.AwsRegion = "$(AwsConnectionStrings__AwsRegion)"
+          $json.AwsConnectionStrings.AwsBucketName = "$(AwsConnectionStrings__AwsBucketName)"
+          $json.ApplicationInsights.ConnectionString = "$(ApplicationInsights__ConnectionString)"
+          $json.AzureServiceBusConfig.ConnectionString = "$(AzureServiceBusConfig__ConnectionString)"
+          $json.AzureServiceBusConfig.RequestQueueName = "$(AzureServiceBusConfig__RequestQueueName)"
+
+          $json | ConvertTo-Json -Depth 32 | Set-Content $appSettingsPath
+
+    # 4. Build the solution
+    - task: VSBuild@1
+      displayName: 'Build solution'
+      inputs:
+        solution: '$(solution)'
+        msbuildArgs: '/p:DeployOnBuild=true /p:WebPublishMethod=Package /p:PackageAsSingleFile=true /p:SkipInvalidConfigurations=true /p:PackageLocation="$(build.artifactStagingDirectory)"'
+        platform: '$(buildPlatform)'
+        configuration: '$(buildConfiguration)'
+
+    
+          
+    # 5. Publish the project
+    - task: DotNetCoreCLI@2
+      name: 'Publish'
+      displayName: 'Publish project'
+      inputs:
+        command: 'publish'
+        publishWebProjects: false
+        projects: '$(project)'
+        arguments: '--configuration $(buildConfiguration) --output $(outputDir)'
+        zipAfterPublish: false
+
+    # 6. Publish build artifacts
+    - task: PublishBuildArtifacts@1
+      name: 'PublishBuildArtifacts'
+      displayName: 'Publish build artifacts'
+      inputs:
+        PathToPublish: '$(outputDir)'
+        ArtifactName: 'Bastion'
+        publishLocation: 'Container'
