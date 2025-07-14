@@ -1,0 +1,100 @@
+trigger:
+  batch: true
+  branches:
+    include:
+      - production
+
+variables:
+  - group: PipelineVariables
+
+stages:
+  - stage: ios_stage
+    displayName: iOS Stage
+    pool:
+      name: Azure Pipelines
+      vmImage: macOS-13
+    jobs:
+      - job: ios_job
+        displayName: iOS Job
+        steps:
+          - template: setup_template.yml
+
+          - task: InstallAppleProvisioningProfile@1
+            inputs:
+              provisioningProfileLocation: "secureFiles"
+              provProfileSecureFile: appalchemy.mobileprovision
+
+          - task: InstallAppleCertificate@2
+            inputs:
+              certSecureFile: distribution.p12
+              keychain: "temp"
+              certPwd: $(ios_distribution_password)
+
+          - task: Bash@3
+            displayName: Build iOS MAUI app
+            inputs:
+              targetType: "inline"
+              script: |
+                dotnet publish MauiPipelines/MauiPipelines/MauiPipelines.csproj -f net8.0-ios -c Release --output '$(Build.ArtifactStagingDirectory)/iOS' -p:ArchiveOnBuild=true -p:RuntimeIdentifier=ios-arm64 -p:CodesignKey="$(codesign_key)" -p:CodesignProvision="$(codesign_provision)"
+
+          - task: PublishBuildArtifacts@1
+            displayName: "Publish iOS app to artifacts"
+            inputs:
+              PathtoPublish: "$(Build.ArtifactStagingDirectory)/iOS"
+              ArtifactName: "iOS"
+
+  - stage: windows_and_android_stage
+    displayName: Windows and Android stage
+    pool:
+      name: Azure Pipelines
+      vmImage: windows-latest
+    jobs:
+      - job: windows_job
+        displayName: Windows job
+        steps:
+          - template: setup_template.yml
+
+          - task: Bash@3
+            displayName: Build Windows MAUI app
+            inputs:
+              targetType: "inline"
+              script: |
+                dotnet publish MauiPipelines/MauiPipelines/MauiPipelines.csproj -f net8.0-windows10.0.19041.0 -c Release --output '$(Build.ArtifactStagingDirectory)/Windows'
+
+          - task: PublishBuildArtifacts@1
+            displayName: "Publish Windows app to artifacts"
+            inputs:
+              PathtoPublish: "$(Build.ArtifactStagingDirectory)/Windows"
+              ArtifactName: "Windows"
+
+      - job: android_job
+        dependsOn: [windows_job]
+        displayName: Android job
+        steps:
+          - template: setup_template.yml
+
+          - task: DownloadSecureFile@1
+            name: keystore_file
+            displayName: Download Keystore File
+            inputs:
+              secureFile: "appalchemy.keystore"
+
+          - task: CopyFiles@2
+            displayName: Import secure file
+            inputs:
+              SourceFolder: $(Agent.TempDirectory)
+              Contents: "appalchemy.keystore"
+              TargetFolder: MauiPipelines/MauiPipelines
+
+          - task: Bash@3
+            displayName: Build Android MAUI app
+            inputs:
+              targetType: "inline"
+              script: |
+                dotnet publish MauiPipelines/MauiPipelines/MauiPipelines.csproj -f net8.0-android -c Release --output '$(Build.ArtifactStagingDirectory)/Android' -p:AndroidKeyStore=true -p:AndroidSigningKeyStore=appalchemy.keystore -p:AndroidSigningKeyAlias=appalchemy -p:AndroidSigningKeyPass=$(keystore_password) -p:AndroidSigningStorePass=$(keystore_password)
+
+          - task: PublishBuildArtifacts@1
+            displayName: "Publish Android app to artifacts"
+            inputs:
+              PathtoPublish: "$(Build.ArtifactStagingDirectory)/Android"
+              ArtifactName: "Android"
